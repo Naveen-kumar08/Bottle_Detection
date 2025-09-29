@@ -43,7 +43,7 @@ labels = model.names
 # -----------------------------
 # Excel + image save setup
 # -----------------------------
-save_folder = r"D:\project\yolo_project\captured"   # save cropped bottles
+save_folder = r"D:\project\yolo_project\captured"   # Save cropped bottles
 os.makedirs(save_folder, exist_ok=True)
 
 excel_file = r"D:\project\yolo_project\results\detections.xlsx"
@@ -54,11 +54,8 @@ if os.path.exists(excel_file):
 else:
     df = pd.DataFrame(columns=["Bottle_ID", "Image", "Class", "Confidence", "Timestamp"])
 
-# bottle counter (unique ID)
-if not df.empty:
-    bottle_id = df["Bottle_ID"].max() + 1
-else:
-    bottle_id = 1
+# Bottle counter (unique ID)
+bottle_id = df["Bottle_ID"].max() + 1 if not df.empty else 1
 
 # -----------------------------
 # Determine source type
@@ -77,12 +74,9 @@ elif os.path.isfile(img_source):
     else:
         print(f'File extension {ext} is not supported.')
         sys.exit(0)
-elif 'usb' in img_source:
+elif img_source.isdigit() or 'usb' in img_source:
     source_type = 'usb'
-    usb_idx = int(img_source[3:])
-elif img_source.isdigit():
-    source_type = 'usb'
-    usb_idx = int(img_source)
+    usb_idx = int(img_source.replace('usb',''))
 elif 'picamera' in img_source:
     source_type = 'picamera'
     picam_idx = int(img_source[8:])
@@ -119,13 +113,8 @@ if record:
 if source_type == 'image':
     imgs_list = [img_source]
 elif source_type == 'folder':
-    imgs_list = []
-    filelist = glob.glob(img_source + '/*')
-    for file in filelist:
-        _, file_ext = os.path.splitext(file)
-        if file_ext in img_ext_list:
-            imgs_list.append(file)
-elif source_type == 'video' or source_type == 'usb':
+    imgs_list = [f for f in glob.glob(img_source + '/*') if os.path.splitext(f)[1] in img_ext_list]
+elif source_type in ['video','usb']:
     cap_arg = img_source if source_type=='video' else usb_idx
     cap = cv2.VideoCapture(cap_arg)
     if user_res:
@@ -134,7 +123,7 @@ elif source_type == 'video' or source_type == 'usb':
 elif source_type == 'picamera':
     from picamera2 import Picamera2
     cap = Picamera2()
-    cap.configure(cap.create_video_configuration(main={"format": 'RGB888', "size": (resW, resH)}))
+    cap.configure(cap.create_video_configuration(main={"format": 'RGB888', "size": (resW,resH)}))
     cap.start()
 
 # -----------------------------
@@ -180,7 +169,6 @@ while True:
     # Run YOLO inference
     results = model(frame, verbose=False)
     detections = results[0].boxes
-
     object_count = 0
 
     for det in detections:
@@ -192,38 +180,44 @@ while True:
 
         if conf > min_thresh:
             color = bbox_colors[classidx % 10]
-            cv2.rectangle(frame, (xmin,ymin), (xmax,ymax), color, 2)
+            cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), color, 2)
             label = f'{classname}: {int(conf*100)}%'
             cv2.putText(frame, label, (xmin, ymin-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 2)
             object_count += 1
 
-            # -----------------------------
-            # Save bottle detections
-            # -----------------------------
-            if classname.lower() == "bottle":
-                filename = f"bottle_{bottle_id}.jpg"
-                filepath = os.path.join(save_folder, filename)
+        # -----------------------------
+        # Save bottle detections
+        # -----------------------------
+        if classname.lower() == "bottle":
+            ymin_c, ymax_c = max(0,ymin), min(frame.shape[0],ymax)
+            xmin_c, xmax_c = max(0,xmin), min(frame.shape[1],xmax)
+            crop = frame[ymin_c:ymax_c, xmin_c:xmax_c]
 
-                crop = frame[ymin:ymax, xmin:xmax]
-                cv2.imwrite(filepath, crop)
+            if crop.size == 0:
+                print("Warning: Empty crop skipped")
+                continue
 
-                # Save to Excel
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                new_data = {
-                    "Bottle_ID": bottle_id,
-                    "Image": filename,
-                    "Class": classname,
-                    "Confidence": round(conf, 2),
-                    "Timestamp": timestamp
-                }
-                df = pd.concat([df, pd.DataFrame([new_data])], ignore_index=True)
-                df.to_excel(excel_file, index=False)
+            filename = f"bottle_{bottle_id}.jpg"
+            filepath = os.path.join(save_folder, filename)
+            cv2.imwrite(filepath, crop)
+            print(f"[INFO] Saved bottle image: {filepath}")
 
-                bottle_id += 1  # increment unique ID
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            new_data = {
+                "Bottle_ID": bottle_id,
+                "Image": filename,
+                "Class": classname,
+                "Confidence": round(conf,2),
+                "Timestamp": timestamp
+            }
+            df = pd.concat([df, pd.DataFrame([new_data])], ignore_index=True)
+            df.to_excel(excel_file, index=False)
+
+            bottle_id += 1
 
     # Overlay info
     if source_type in ['video','usb','picamera']:
-        cv2.putText(frame, f'FPS: {avg_frame_rate:0.2f}', (10,20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,255), 2)
+        cv2.putText(frame, f'FPS: {avg_frame_rate:.2f}', (10,20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,255), 2)
     cv2.putText(frame, f'Objects: {object_count}', (10,40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,255), 2)
 
     cv2.imshow('YOLO detection results', frame)
@@ -235,6 +229,7 @@ while True:
         break
     elif key in [ord('p'), ord('P')]:
         cv2.imwrite('capture.png', frame)
+        print("[INFO] Saved manual capture: capture.png")
 
     # FPS calculation
     t_stop = time.perf_counter()
